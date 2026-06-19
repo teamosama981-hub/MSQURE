@@ -401,6 +401,7 @@ async def register(p: RegisterIn):
          "password_hash": hash_pw(p.password), "full_name": p.full_name, "phone": p.phone or "",
          "role": "student", "created_at": now_utc().isoformat()}
     await db.users.insert_one(u)
+    u.pop("_id", None)
     jti = str(uuid.uuid4())
     token = create_token(u["id"], u["role"], u["username"], jti=jti)
     await create_session(u["id"], jti, device="web")
