@@ -616,14 +616,16 @@ async def verify_manual_payment(p: PaymentApprovalIn, u=Depends(require_roles("a
 
 @api.get("/enrollments/mine")
 async def my_enrollments(u=Depends(current_user)):
-    rows = await db.enrollments.find({"user_id": u["id"]}, {"_id": 0}).to_list(500)
-    out = []
-    for r in rows:
-        c = await db.courses.find_one({"id": r["course_id"]}, {"_id": 0})
-        if c:
-            r["course"] = c
-            out.append(r)
-    return out
+    # Single aggregation: enrollments + joined course doc (no N+1).
+    pipeline = [
+        {"$match": {"user_id": u["id"]}},
+        {"$lookup": {"from": "courses", "localField": "course_id", "foreignField": "id", "as": "course"}},
+        {"$unwind": {"path": "$course", "preserveNullAndEmptyArrays": True}},
+        {"$project": {"_id": 0, "course._id": 0}},
+    ]
+    rows = await db.enrollments.aggregate(pipeline).to_list(500)
+    # Filter out enrollments whose course has been deleted (course is None/missing)
+    return [r for r in rows if r.get("course")]
 
 
 # ----------------------------- live classes -------------------------------
