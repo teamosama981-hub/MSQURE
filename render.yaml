@@ -1,0 +1,56 @@
+# HENAKASHA EdTech — Render Deployment Blueprint
+# 1-click deploy: connect this repo to Render, choose "Blueprint", and Render will read this file.
+# Free tier eligible (sleeps after 15 min). Upgrade for always-on.
+
+services:
+  # ============================================================
+  # Backend API (FastAPI)
+  # ============================================================
+  - type: web
+    name: henakasha-api
+    env: python
+    region: oregon
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/
+    envVars:
+      - key: MONGO_URL
+        sync: false           # set in dashboard (MongoDB Atlas URI)
+      - key: DB_NAME
+        value: henakasha_db
+      - key: JWT_SECRET
+        generateValue: true   # render auto-generates strong secret
+      - key: JWT_ALGO
+        value: HS256
+      - key: JWT_EXPIRES_MIN
+        value: "10080"
+      - key: LOGO_URL
+        value: https://customer-assets.emergentagent.com/job_learning-hena/artifacts/si1cgnjv_ChatGPT%20Image%20Jun%2018%2C%202026%2C%2001_51_17%20PM.png
+      - key: UPI_QR_URL
+        value: https://customer-assets.emergentagent.com/job_learning-hena/artifacts/pi1g6kyh_WhatsApp%20Image%202026-06-18%20at%202.26.26%20PM.jpeg
+      - key: APP_PUBLIC_URL
+        sync: false           # set to your deployed web URL e.g. https://henakasha-web.onrender.com
+      - key: PYTHON_VERSION
+        value: "3.11"
+
+  # ============================================================
+  # Web App (Expo Web - static export)
+  # ============================================================
+  - type: web
+    name: henakasha-web
+    env: static
+    rootDir: frontend
+    buildCommand: yarn install --frozen-lockfile && yarn expo export --platform web
+    staticPublishPath: dist
+    envVars:
+      - key: EXPO_PUBLIC_BACKEND_URL
+        sync: false           # set to your deployed API URL e.g. https://henakasha-api.onrender.com
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: https://henakasha-api.onrender.com/api/:splat
+      - type: rewrite
+        source: /*
+        destination: /index.html
