@@ -41,7 +41,6 @@ LOGO_URL = os.environ.get("LOGO_URL", "")
 UPI_QR_URL = os.environ.get("UPI_QR_URL", "")
 APP_PUBLIC_URL = os.environ.get("APP_PUBLIC_URL", "")
 PASS_MARK_PCT = 60.0  # student must score >=60% to earn certificate
-
 MONGO_URL_2 = os.environ.get("MONGO_URL_2")
 MONGO_URL_3 = os.environ.get("MONGO_URL_3")
 
@@ -79,7 +78,28 @@ async def get_active_db():
     except Exception as e:
         log.error(f"DB switch error: {e}")
         return db1
+async def insert_auto(collection_name, document):
+    active_db = await get_active_db()
+    collection = getattr(active_db, collection_name)
+    return await collection.insert_one(document)
 
+
+async def find_one_all(collection_name, query):
+    databases = [db1]
+
+    if db2:
+        databases.append(db2)
+
+    if db3:
+        databases.append(db3)
+
+    for database in databases:
+        result = await getattr(database, collection_name).find_one(query)
+
+        if result:
+            return result
+
+    return None
 
 app = FastAPI(title="HENAKASHA EdTech API")
 api = APIRouter(prefix="/api")
@@ -437,7 +457,7 @@ async def register(p: RegisterIn):
     u = {"id": str(uuid.uuid4()), "username": p.username, "email": p.email,
          "password_hash": hash_pw(p.password), "full_name": p.full_name, "phone": p.phone or "",
          "role": "student", "created_at": now_utc().isoformat()}
-    await db.users.insert_one(u)
+    await insert_auto("users", u)
     u.pop("_id", None)
     jti = str(uuid.uuid4())
     token = create_token(u["id"], u["role"], u["username"], jti=jti)
@@ -448,7 +468,10 @@ async def register(p: RegisterIn):
 
 @api.post("/auth/login")
 async def login(p: LoginIn):
-    u = await db.users.find_one({"username": p.username})
+    u = await find_one_all(
+    "users",
+    {"username": p.username}
+)
     if not u or not verify_pw(p.password, u["password_hash"]):
         raise HTTPException(401, "Invalid username or password")
     jti = str(uuid.uuid4())
