@@ -63,14 +63,14 @@ async def get_active_db():
         if size1 < 450 * 1024 * 1024:
             return db1
 
-        if db2:
+        if db2 is not None:
             stats2 = await db2.command("dbStats")
             size2 = stats2.get("dataSize", 0)
 
             if size2 < 450 * 1024 * 1024:
                 return db2
 
-        if db3:
+        if db3 is not None:
             return db3
 
         return db1
@@ -87,11 +87,11 @@ async def insert_auto(collection_name, document):
 async def find_one_all(collection_name, query):
     databases = [db1]
 
-    if db2:
-        databases.append(db2)
+    if db2 is not None:
+    databases.append(db2)
 
-    if db3:
-        databases.append(db3)
+if db3 is not None:
+    databases.append(db3)
 
     for database in databases:
         result = await getattr(database, collection_name).find_one(query)
