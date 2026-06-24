@@ -749,7 +749,7 @@ async def verify_rzp(course_id: str, razorpay_payment_id: str, u=Depends(current
 
 @api.get("/payments/pending")
 async def pending_payments(u=Depends(require_roles("admin", "super_admin"))):
-    \return await find_all_auto(
+    return await find_all_auto(
     "payments",
     {"status":"pending"}
 )
