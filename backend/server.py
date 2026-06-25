@@ -1111,7 +1111,7 @@ async def submit_quiz(p: QuizSubmissionIn, u=Depends(current_user)):
             # BUG FIX 1 (applied here): APP_PUBLIC_URL is now stripped of trailing
             # slash at module load time, so this f-string always produces a valid
             # absolute URL like https://host.com/verify/HENA-xxx
-            verify_url = f"https://henakasha-tech-welfare-foundation.onrender.com/certificate/{cert_id}"
+            verify_url = f"{FRONTEND_URL}/verify/{cert_id}"
             await insert_auto("certificates", {
                 "id": cert_id, "user_id": u["id"], "user_name": u.get("full_name"),
                 "user_email": u.get("email"), "user_phone": u.get("phone"),
@@ -1300,7 +1300,7 @@ async def cert_qr(cert_id: str):
         verify_url = stored_url
     else:
         # Old cert stored relative path — reconstruct absolute URL
-        verify_url = f"https://henakasha-tech-welfare-foundation.onrender.com/certificate/{cert_id}"
+        verify_url = f"{FRONTEND_URL}/verify/{cert_id}"
     img = qrcode.make(verify_url)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
