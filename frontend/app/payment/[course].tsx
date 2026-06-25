@@ -24,7 +24,26 @@ export default function Payment() {
     api.get(`/courses/${course}`).then(r => setC(r.data));
     api.get('/settings').then(r => setSettings(r.data));
   }, [course]);
+const loadRazorpay = () =>
+  new Promise<boolean>((resolve) => {
+    if (Platform.OS !== "web") {
+      resolve(true);
+      return;
+    }
 
+    if ((window as any).Razorpay) {
+      resolve(true);
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.onload = () => resolve(true);
+    script.onerror = () => resolve(false);
+
+    document.body.appendChild(script);
+  });
+  
   const submitManual = async () => {
     setMsg(null);
     if (!utr.trim()) { setMsg({ kind: 'err', text: 'Please enter your UTR / transaction reference' }); return; }
@@ -44,12 +63,70 @@ export default function Payment() {
   const submitRazorpay = async () => {
     setMsg(null); setLoading(true);
     try {
-      const r = await api.post(`/payments/razorpay/order`, null, { params: { course_id: course } });
-      // In production: open Razorpay checkout with r.data.key_id + order_id. For now, simulate verify with mock id.
-      const mock = `pay_${Math.random().toString(36).slice(2, 12)}`;
-      await api.post('/payments/razorpay/verify', null, { params: { course_id: course, razorpay_payment_id: mock } });
-      setMsg({ kind: 'ok', text: 'Payment successful! Enrolled.' });
-      setTimeout(() => router.replace(`/course/${course}` as any), 1500);
+      const r = await api.post(
+  "/payments/razorpay/order",
+  null,
+  {
+    params: {
+      course_id: course,
+    },
+  }
+);
+
+const order = r.data;
+
+      if (Platform.OS === "web") {
+  const ok = await loadRazorpay();
+
+  if (!ok) {
+    throw new Error("Failed to load Razorpay SDK");
+  }
+
+  const rz = new (window as any).Razorpay({
+    key: order.key_id,
+    amount: order.amount,
+    currency: order.currency,
+    order_id: order.order_id,
+
+    name: "HENAKASHA TECH & WELFARE FOUNDATION",
+    description: c.name,
+
+    handler: async (response: any) => {
+      await api.post(
+        "/payments/razorpay/verify",
+        {
+          course_id: course,
+          razorpay_order_id: response.razorpay_order_id,
+          razorpay_payment_id: response.razorpay_payment_id,
+          razorpay_signature: response.razorpay_signature,
+        }
+      );
+
+      setMsg({
+        kind: "ok",
+        text: "Payment successful! Enrolled.",
+      });
+
+      setTimeout(() => {
+        router.replace(`/course/${course}` as any);
+      }, 1500);
+    },
+
+    prefill: {
+      name: "",
+      email: "",
+      contact: "",
+    },
+
+    theme: {
+      color: "#1E40AF",
+    },
+  });
+
+  rz.open();
+  return;
+}
+      
     } catch (e: any) {
       setMsg({ kind: 'err', text: e?.response?.data?.detail || 'Razorpay is not configured. Please use Manual UPI.' });
     } finally { setLoading(false); }
