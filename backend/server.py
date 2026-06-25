@@ -854,51 +854,53 @@ class RazorpayVerifyIn(BaseModel):
 
 @api.post("/payments/razorpay/verify")
 async def verify_rzp(p: RazorpayVerifyIn, u=Depends(current_user)):
-  course = await find_one_all("courses", {"id": p.course_id})
-if not course:
-    raise HTTPException(404, "Course not found")
+    course = await find_one_all("courses", {"id": p.course_id})
+    if not course:
+        raise HTTPException(404, "Course not found")
 
-if not razorpay_client:
-    raise HTTPException(500, "Razorpay not configured")
+    if not razorpay_client:
+        raise HTTPException(500, "Razorpay not configured")
 
-try:
-    razorpay_client.utility.verify_payment_signature({
-        "razorpay_order_id": p.razorpay_order_id,
-        "razorpay_payment_id": p.razorpay_payment_id,
-        "razorpay_signature": p.razorpay_signature,
+    try:
+        razorpay_client.utility.verify_payment_signature({
+            "razorpay_order_id": p.razorpay_order_id,
+            "razorpay_payment_id": p.razorpay_payment_id,
+            "razorpay_signature": p.razorpay_signature,
+        })
+    except Exception:
+        raise HTTPException(400, "Invalid payment signature")
+
+    pid = str(uuid.uuid4())
+
+    await insert_auto("payments", {
+        "id": pid,
+        "user_id": u["id"],
+        "user_name": u.get("full_name", ""),
+        "course_id": p.course_id,
+        "course_name": course.get("name"),
+        "amount": course.get("discount_price") or course.get("price") or 0,
+        "method": "razorpay",
+        "rzp_order_id": p.razorpay_order_id,
+        "rzp_payment_id": p.razorpay_payment_id,
+        "status": "approved",
+        "created_at": now_utc().isoformat(),
+        "verified_by": "razorpay"
     })
-except Exception:
-    raise HTTPException(400, "Invalid payment signature")
 
-pid = str(uuid.uuid4())
+    await ensure_enrolled(u["id"], p.course_id)
 
-await insert_auto("payments", {
-    "id": pid,
-    "user_id": u["id"],
-    "user_name": u.get("full_name", ""),
-    "course_id": p.course_id,
-    "course_name": course.get("name"),
-    "amount": course.get("discount_price") or course.get("price") or 0,
-    "method": "razorpay",
-    "rzp_order_id": p.razorpay_order_id,
-    "rzp_payment_id": p.razorpay_payment_id,
-    "status": "approved",
-    "created_at": now_utc().isoformat(),
-    "verified_by": "razorpay"
-})
+    await notify(
+        u["id"],
+        "Payment successful",
+        f"You are enrolled in {course.get('name')}.",
+        "success"
+    )
 
-await ensure_enrolled(u["id"], p.course_id)
-
-await notify(
-    u["id"],
-    "Payment successful",
-    f"You are enrolled in {course.get('name')}.",
-    "success"
-)
-
-return {"ok": True, "payment_id": pid}
-
-
+    return {
+        "ok": True,
+        "payment_id": pid
+    }
+    
 @api.get("/payments/pending")
 async def pending_payments(u=Depends(require_roles("admin", "super_admin"))):
     return await find_all_auto("payments", {"status": "pending"})
