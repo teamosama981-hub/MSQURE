@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Literal, Union
 
 import jwt
 import qrcode
+import razorpay
+from pydantic import BaseModel
 from bcrypt import hashpw, checkpw, gensalt
 from dotenv import load_dotenv
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Query
@@ -59,6 +61,15 @@ if not APP_PUBLIC_URL:
         "APP_PUBLIC_URL is not set or is empty. Certificate verify_url will be "
         "relative paths only (/verify/...). Set APP_PUBLIC_URL in Render environment "
         "variables to https://henakasha-tech-and-welfare-foundation.onrender.com"
+    )
+RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
+
+razorpay_client = None
+
+if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET:
+    razorpay_client = razorpay.Client(
+        auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)
     )
 
 client1 = AsyncIOMotorClient(MONGO_URL)
@@ -805,27 +816,78 @@ async def create_rzp_order(course_id: str, u=Depends(current_user)):
     course = await find_one_all("courses", {"id": course_id})
     if not course:
         raise HTTPException(404, "Course not found")
-    return {"key_id": settings.get("razorpay_key_id"),
-            "amount": int((course.get("discount_price") or course.get("price") or 0) * 100),
-            "currency": "INR", "order_id": f"order_{uuid.uuid4().hex[:14]}", "course_id": course_id}
+   amount = int((course.get("discount_price") or course.get("price") or 0) * 100)
+
+if not razorpay_client:
+    raise HTTPException(500, "Razorpay client not configured")
+
+order = razorpay_client.order.create({
+    "amount": amount,
+    "currency": "INR",
+    "payment_capture": 1
+})
+
+return {
+    "key_id": RAZORPAY_KEY_ID,
+    "amount": amount,
+    "currency": "INR",
+    "order_id": order["id"],
+    "course_id": course_id
+}
+
+
+class RazorpayVerifyIn(BaseModel):
+    course_id: str
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
 
 
 @api.post("/payments/razorpay/verify")
-async def verify_rzp(course_id: str, razorpay_payment_id: str, u=Depends(current_user)):
-    course = await find_one_all("courses", {"id": course_id})
-    if not course:
-        raise HTTPException(404, "Course not found")
-    pid = str(uuid.uuid4())
-    await insert_auto("payments", {
-        "id": pid, "user_id": u["id"], "user_name": u.get("full_name", ""),
-        "course_id": course_id, "course_name": course.get("name"),
-        "amount": course.get("discount_price") or course.get("price") or 0,
-        "method": "razorpay", "rzp_payment_id": razorpay_payment_id,
-        "status": "approved", "created_at": now_utc().isoformat(), "verified_by": "system",
+async def verify_rzp(p: RazorpayVerifyIn, u=Depends(current_user)):
+  course = await find_one_all("courses", {"id": p.course_id})
+if not course:
+    raise HTTPException(404, "Course not found")
+
+if not razorpay_client:
+    raise HTTPException(500, "Razorpay not configured")
+
+try:
+    razorpay_client.utility.verify_payment_signature({
+        "razorpay_order_id": p.razorpay_order_id,
+        "razorpay_payment_id": p.razorpay_payment_id,
+        "razorpay_signature": p.razorpay_signature,
     })
-    await ensure_enrolled(u["id"], course_id)
-    await notify(u["id"], "Payment successful", f"You are enrolled in {course.get('name')}.", "success")
-    return {"ok": True, "payment_id": pid}
+except Exception:
+    raise HTTPException(400, "Invalid payment signature")
+
+pid = str(uuid.uuid4())
+
+await insert_auto("payments", {
+    "id": pid,
+    "user_id": u["id"],
+    "user_name": u.get("full_name", ""),
+    "course_id": p.course_id,
+    "course_name": course.get("name"),
+    "amount": course.get("discount_price") or course.get("price") or 0,
+    "method": "razorpay",
+    "rzp_order_id": p.razorpay_order_id,
+    "rzp_payment_id": p.razorpay_payment_id,
+    "status": "approved",
+    "created_at": now_utc().isoformat(),
+    "verified_by": "razorpay"
+})
+
+await ensure_enrolled(u["id"], p.course_id)
+
+await notify(
+    u["id"],
+    "Payment successful",
+    f"You are enrolled in {course.get('name')}.",
+    "success"
+)
+
+return {"ok": True, "payment_id": pid}
 
 
 @api.get("/payments/pending")
