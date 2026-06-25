@@ -126,6 +126,42 @@ const order = r.data;
   rz.open();
   return;
 }
+
+const payment = await RazorpayCheckout.open({
+  key: order.key_id,
+  amount: order.amount,
+  currency: order.currency,
+  order_id: order.order_id,
+
+  name: "HENAKASHA TECH & WELFARE FOUNDATION",
+  description: c.name,
+
+  prefill: {
+    name: "",
+    email: "",
+    contact: "",
+  },
+
+  theme: {
+    color: "#1E40AF",
+  },
+});
+
+await api.post("/payments/razorpay/verify", {
+  course_id: course,
+  razorpay_order_id: payment.razorpay_order_id,
+  razorpay_payment_id: payment.razorpay_payment_id,
+  razorpay_signature: payment.razorpay_signature,
+});
+
+setMsg({
+  kind: "ok",
+  text: "Payment successful! Enrolled.",
+});
+
+setTimeout(() => {
+  router.replace(`/course/${course}` as any);
+}, 1500);
       
     } catch (e: any) {
       setMsg({ kind: 'err', text: e?.response?.data?.detail || 'Razorpay is not configured. Please use Manual UPI.' });
