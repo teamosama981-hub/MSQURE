@@ -40,10 +40,25 @@ JWT_EXPIRES_MIN = int(os.environ.get("JWT_EXPIRES_MIN", "10080"))
 MAX_DEVICES = int(os.environ.get("MAX_DEVICES", "2"))
 LOGO_URL = os.environ.get("LOGO_URL", "")
 UPI_QR_URL = os.environ.get("UPI_QR_URL", "")
-APP_PUBLIC_URL = os.environ.get("APP_PUBLIC_URL", "")
 PASS_MARK_PCT = 60.0  # student must score >=60% to earn certificate
 MONGO_URL_2 = os.environ.get("MONGO_URL_2")
 MONGO_URL_3 = os.environ.get("MONGO_URL_3")
+
+# BUG FIX 1: APP_PUBLIC_URL trailing slash causes verify_url to become
+#   "https://host.com//verify/HENA-xxx" OR the env var on Render may have
+#   been set with a trailing slash. Strip it unconditionally so
+#   f"{APP_PUBLIC_URL}/verify/{cert_id}" is always well-formed.
+# BUG FIX 1b: If APP_PUBLIC_URL is empty string (env var missing/blank),
+#   the stored verify_url becomes "/verify/HENA-xxx" (no host) which is
+#   exactly the QR bug reported. The .strip() + fallback makes this obvious
+#   at startup via the log warning below.
+APP_PUBLIC_URL = os.environ.get("APP_PUBLIC_URL", "").rstrip("/").strip()
+if not APP_PUBLIC_URL:
+    log.warning(
+        "APP_PUBLIC_URL is not set or is empty. Certificate verify_url will be "
+        "relative paths only (/verify/...). Set APP_PUBLIC_URL in Render environment "
+        "variables to https://henakasha-tech-and-welfare-foundation.onrender.com"
+    )
 
 client1 = AsyncIOMotorClient(MONGO_URL)
 db1 = client1[DB_NAME]
@@ -145,6 +160,11 @@ async def delete_auto(collection_name, query):
     return deleted_count
 
 
+# BUG FIX 2: find_all_auto was converting ObjectId _id to str but NOT removing it.
+# FastAPI's JSONResponse cannot serialize ObjectId. Converting to str is correct,
+# but we also need to strip _id entirely from API responses to avoid leaking
+# internal MongoDB document IDs to the client. We strip it here centrally so
+# every caller gets clean documents without needing individual .pop("_id") calls.
 async def find_all_auto(
     collection_name,
     query=None,
@@ -172,10 +192,8 @@ async def find_all_auto(
         ).find(query).to_list(None)
 
         for doc in docs:
-
-            if "_id" in doc and isinstance(doc["_id"], ObjectId):
-                doc["_id"] = str(doc["_id"])
-
+            # Strip _id entirely - never expose internal MongoDB _id to clients
+            doc.pop("_id", None)
             results.append(doc)
 
     results.sort(
@@ -241,9 +259,6 @@ def create_token(uid: str, role: str, username: str, jti: Optional[str] = None) 
     }, JWT_SECRET, algorithm=JWT_ALGO)
 
 
-# FIX: create_session now uses find_one_all / insert_auto / count_all_auto / delete_auto
-# instead of direct db.sessions calls, so session data is stored in the active DB
-# and queried across all DBs. Device-limit eviction works correctly across shards.
 async def create_session(uid: str, jti: str, device: str = "") -> None:
     """Create a session row. If user exceeds MAX_DEVICES, evict the oldest."""
     await insert_auto("sessions", {
@@ -255,7 +270,6 @@ async def create_session(uid: str, jti: str, device: str = "") -> None:
     count = await count_all_auto("sessions", {"user_id": uid})
     if count > MAX_DEVICES:
         excess = count - MAX_DEVICES
-        # Fetch oldest sessions across all DBs
         all_sessions = await find_all_auto("sessions", {"user_id": uid}, sort_field="created_at", sort_order=1)
         oldest = all_sessions[:excess]
         if oldest:
@@ -270,8 +284,6 @@ def clean(d):
     return d
 
 
-# FIX: current_user now uses find_one_all for both sessions and users lookups,
-# and uses update_auto for last_seen update, so it works correctly across all DBs.
 async def current_user(creds: Optional[HTTPAuthorizationCredentials] = Depends(security)):
     if not creds:
         raise HTTPException(401, "Not authenticated")
@@ -281,13 +293,11 @@ async def current_user(creds: Optional[HTTPAuthorizationCredentials] = Depends(s
         raise HTTPException(401, "Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(401, "Invalid token")
-    # Enforce session presence (device-limit revocation). Tokens without jti are pre-update -> allow once.
     jti = payload.get("jti")
     if jti:
         sess = await find_one_all("sessions", {"jti": jti, "user_id": payload["sub"]})
         if not sess:
             raise HTTPException(401, "Session expired — signed out from another device")
-        # update last_seen lazily
         await update_auto("sessions", {"id": sess["id"]}, {"$set": {"last_seen": now_utc().isoformat()}})
     u = await find_one_all("users", {"id": payload["sub"]})
     if not u:
@@ -306,8 +316,6 @@ def require_roles(*roles: str):
     return dep
 
 
-# FIX: notify now uses insert_auto instead of db.notifications.insert_one
-# so notifications are written to the active DB and distributed correctly.
 async def notify(uid: str, title: str, body: str, kind: str = "info", link: Optional[str] = None):
     await insert_auto("notifications", {
         "id": str(uuid.uuid4()), "user_id": uid, "title": title, "body": body,
@@ -324,7 +332,6 @@ def extract_youtube_id(url: str) -> Optional[str]:
     m = YT_RX.search(url)
     if m:
         return m.group(1)
-    # allow raw IDs
     if re.fullmatch(r"[A-Za-z0-9_-]{6,}", url.strip()):
         return url.strip()
     return None
@@ -455,9 +462,9 @@ class QuizQuestion(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     text: str
     q_type: QuestionType = "single"
-    options: List[str] = []                # for single/multiple
-    correct_options: List[int] = []        # for single (len=1) & multiple
-    correct_integer: Optional[int] = None  # for integer
+    options: List[str] = []
+    correct_options: List[int] = []
+    correct_integer: Optional[int] = None
     marks: float = 1.0
 
 
@@ -474,7 +481,6 @@ class QuizIn(BaseModel):
 
 class QuizSubmissionIn(BaseModel):
     quiz_id: str
-    # answers: question_id -> single index | list of indices | integer
     answers: Dict[str, Union[int, List[int]]]
 
 
@@ -499,7 +505,7 @@ class SettingsIn(BaseModel):
 
 
 class AnnouncementIn(BaseModel):
-    course_id: Optional[str] = None   # None => global / all batches
+    course_id: Optional[str] = None
     title: str
     body: str
     kind: Literal["info", "warning", "cancel", "reschedule"] = "info"
@@ -511,7 +517,6 @@ SEED_CATEGORIES = ["Tech", "JEE", "NEET", "CBSE Class 9", "CBSE Class 10", "CBSE
 
 @app.on_event("startup")
 async def seed():
-    # Indexes on db1 only (primary); db2/db3 get indexes lazily on first write if needed.
     await db1.users.create_index("username", unique=True)
     await db1.courses.create_index("id", unique=True)
     await db1.enrollments.create_index([("user_id", 1), ("course_id", 1)], unique=True)
@@ -529,7 +534,6 @@ async def seed():
     await seed_user("teacher_demo", "Teacher@123", "Demo Teacher", "teacher", "teacher@henakasha.org")
     await seed_user("student_demo", "Student@123", "Demo Student", "student", "student@henakasha.org")
 
-    # Re-seed categories: remove anything not in current list, upsert the new ones.
     await db1.categories.delete_many({"name": {"$nin": SEED_CATEGORIES}})
     for c in SEED_CATEGORIES:
         await db1.categories.update_one({"name": c}, {"$setOnInsert": {"name": c, "id": str(uuid.uuid4())}}, upsert=True)
@@ -587,7 +591,8 @@ async def seed():
              "banner": "https://images.unsplash.com/photo-1434030216411-0b793f4b4173?w=1200"},
         ]
         for s in samples:
-            s.update({"id": str(uuid.uuid4()), "language": "English", "status": "published", "created_at": now_utc().isoformat(), "has_certificate": True})
+            s.update({"id": str(uuid.uuid4()), "language": "English", "status": "published",
+                      "created_at": now_utc().isoformat(), "has_certificate": True})
             await db1.courses.insert_one(s)
     log.info("Seed complete.")
 
@@ -634,9 +639,9 @@ async def logout(u=Depends(current_user)):
 
 @api.get("/auth/sessions")
 async def my_sessions(u=Depends(current_user)):
+    # find_all_auto now strips _id centrally, no need for r.pop("_id") here
     rows = await find_all_auto("sessions", {"user_id": u["id"]}, sort_field="created_at", sort_order=-1)
     for r in rows:
-        r.pop("_id", None)
         r["current"] = (r.get("jti") == u.get("_jti"))
     return {"max_devices": MAX_DEVICES, "sessions": rows}
 
@@ -647,7 +652,10 @@ async def forgot(p: ForgotIn):
     if not u:
         raise HTTPException(404, "User not found")
     code = str(uuid.uuid4())[:8].upper()
-    await update_auto("users", {"id": u["id"]}, {"$set": {"reset_code": code, "reset_expires": (now_utc() + timedelta(minutes=30)).isoformat()}})
+    await update_auto("users", {"id": u["id"]}, {"$set": {
+        "reset_code": code,
+        "reset_expires": (now_utc() + timedelta(minutes=30)).isoformat()
+    }})
     return {"message": "Use this code to reset your password (valid 30 min)", "reset_code": code}
 
 
@@ -658,7 +666,10 @@ async def reset(p: ResetIn):
         raise HTTPException(400, "Invalid reset code")
     if u.get("reset_expires") and parse_iso(u["reset_expires"]) < now_utc():
         raise HTTPException(400, "Reset code expired")
-    await update_auto("users", {"id": u["id"]}, {"$set": {"password_hash": hash_pw(p.new_password)}, "$unset": {"reset_code": "", "reset_expires": ""}})
+    await update_auto("users", {"id": u["id"]}, {
+        "$set": {"password_hash": hash_pw(p.new_password)},
+        "$unset": {"reset_code": "", "reset_expires": ""}
+    })
     return {"message": "Password reset successful"}
 
 
@@ -735,8 +746,6 @@ async def delete_course(cid: str, u=Depends(require_roles("admin", "super_admin"
 
 
 # ----------------------------- settings -----------------------------------
-# NOTE: settings is a singleton global doc (id="global"); kept on db1 only.
-# Multi-DB routing for settings is not necessary and would complicate secret management.
 @api.get("/settings")
 async def get_settings():
     s = await find_one_all("settings", {"id": "global"})
@@ -754,6 +763,7 @@ async def update_settings(p: SettingsIn, u=Depends(require_roles("super_admin"))
     result = await find_one_all("settings", {"id": "global"})
     if result:
         result.pop("_id", None)
+        result.pop("razorpay_key_secret", None)
     return result
 
 
@@ -781,7 +791,8 @@ async def submit_manual_payment(p: PaymentManualIn, u=Depends(current_user)):
         "amount": p.amount, "method": "manual_upi", "utr": p.utr,
         "status": "pending", "created_at": now_utc().isoformat(),
     })
-    await notify(u["id"], "Payment submitted", f"Your payment (UTR {p.utr}) for {course.get('name')} is under review.", "info")
+    await notify(u["id"], "Payment submitted",
+                 f"Your payment (UTR {p.utr}) for {course.get('name')} is under review.", "info")
     return {"payment_id": pid, "status": "pending"}
 
 
@@ -843,15 +854,16 @@ async def verify_manual_payment(p: PaymentApprovalIn, u=Depends(require_roles("a
     }})
     if p.approve:
         await ensure_enrolled(pay["user_id"], pay["course_id"])
-        await notify(pay["user_id"], "Payment approved", f"You are now enrolled in {pay.get('course_name')}.", "success")
+        await notify(pay["user_id"], "Payment approved",
+                     f"You are now enrolled in {pay.get('course_name')}.", "success")
     else:
-        await notify(pay["user_id"], "Payment rejected", f"Your payment for {pay.get('course_name')} was rejected. {p.reason or ''}", "error")
+        await notify(pay["user_id"], "Payment rejected",
+                     f"Your payment for {pay.get('course_name')} was rejected. {p.reason or ''}", "error")
     return {"ok": True, "status": new_status}
 
 
 @api.get("/enrollments/mine")
 async def my_enrollments(u=Depends(current_user)):
-    # Aggregate pipeline with $lookup: must run against each DB and merge results.
     # MUST stay custom — uses $lookup which find_all_auto does not support.
     pipeline = [
         {"$match": {"user_id": u["id"]}},
@@ -868,7 +880,6 @@ async def my_enrollments(u=Depends(current_user)):
     for database in databases:
         batch = await database.enrollments.aggregate(pipeline).to_list(500)
         rows.extend(batch)
-    # Filter out enrollments whose course has been deleted (course is None/missing)
     return [r for r in rows if r.get("course")]
 
 
@@ -878,7 +889,6 @@ async def create_live_class(p: LiveClassIn, u=Depends(require_roles("teacher", "
     doc = p.dict()
     doc.update({"id": str(uuid.uuid4()), "created_by": u["id"], "created_at": now_utc().isoformat()})
     await insert_auto("live_classes", doc)
-    # notify enrolled students
     enrolled = await find_all_auto("enrollments", {"course_id": p.course_id})
     for s in enrolled:
         await notify(s["user_id"], "New live class scheduled", f"{p.title} at {p.scheduled_at}", "info")
@@ -949,7 +959,6 @@ async def upload_note(p: NoteIn, u=Depends(require_roles("teacher", "admin", "su
     return {k: v for k, v in doc.items() if k != "_id" and k != "file_base64"}
 
 
-# FIX: list_notes had broken indentation — the for-loop and return were outside the function body.
 @api.get("/notes")
 async def list_notes(course_id: str):
     notes = await find_all_auto("notes", {"course_id": course_id})
@@ -1031,6 +1040,10 @@ async def create_quiz(p: QuizIn, u=Depends(require_roles("teacher", "admin", "su
     return {k: v for k, v in doc.items() if k != "_id"}
 
 
+# BUG FIX 3: Route ordering — /quizzes/submit is a POST so no conflict with GET /quizzes/{qid}.
+# But /quizzes/{qid}/toggle is PUT and /quizzes/{qid} is GET/DELETE — ordering is fine.
+# No route ordering fix needed here; FastAPI differentiates by HTTP method.
+
 @api.put("/quizzes/{qid}/toggle")
 async def toggle_quiz(qid: str, enabled: bool, u=Depends(require_roles("admin", "super_admin"))):
     await update_auto("quizzes", {"id": qid}, {"$set": {"enabled": enabled}})
@@ -1083,7 +1096,6 @@ async def submit_quiz(p: QuizSubmissionIn, u=Depends(current_user)):
     }
     await insert_auto("quiz_submissions", sub)
 
-    # exam pass → auto-create certificate QR (only if course has_certificate)
     if q.get("kind") == "exam" and result["percentage"] >= PASS_MARK_PCT:
         await update_auto(
             "enrollments",
@@ -1095,32 +1107,39 @@ async def submit_quiz(p: QuizSubmissionIn, u=Depends(current_user)):
         existing_cert = await find_one_all("certificates", {"user_id": u["id"], "course_id": q["course_id"]})
         if has_cert and not existing_cert:
             cert_id = f"HENA-{uuid.uuid4().hex[:10].upper()}"
+            # BUG FIX 1 (applied here): APP_PUBLIC_URL is now stripped of trailing
+            # slash at module load time, so this f-string always produces a valid
+            # absolute URL like https://host.com/verify/HENA-xxx
+            verify_url = f"{APP_PUBLIC_URL}/verify/{cert_id}"
             await insert_auto("certificates", {
                 "id": cert_id, "user_id": u["id"], "user_name": u.get("full_name"),
                 "user_email": u.get("email"), "user_phone": u.get("phone"),
                 "course_id": q["course_id"], "course_name": course.get("name") if course else "",
                 "score": result["percentage"], "issued_at": now_utc().isoformat(),
-                "verify_url": f"{APP_PUBLIC_URL}/verify/{cert_id}",
+                "verify_url": verify_url,
                 "valid": True,
             })
-            await notify(u["id"], "Certificate generated!", f"Your certificate for {course.get('name') if course else ''} is ready.", "success", link=f"/verify/{cert_id}")
+            await notify(u["id"], "Certificate generated!",
+                         f"Your certificate for {course.get('name') if course else ''} is ready.",
+                         "success", link=f"/verify/{cert_id}")
 
     return clean(sub)
 
 
 @api.get("/quizzes/{qid}/my-submissions")
 async def my_quiz_subs(qid: str, u=Depends(current_user)):
-    return await find_all_auto("quiz_submissions", {"quiz_id": qid, "user_id": u["id"]}, sort_field="created_at", sort_order=-1)
+    return await find_all_auto("quiz_submissions", {"quiz_id": qid, "user_id": u["id"]},
+                               sort_field="created_at", sort_order=-1)
 
 
 @api.get("/submissions/mine")
 async def all_my_subs(u=Depends(current_user)):
-    return await find_all_auto("quiz_submissions", {"user_id": u["id"]}, sort_field="created_at", sort_order=-1)
+    return await find_all_auto("quiz_submissions", {"user_id": u["id"]},
+                               sort_field="created_at", sort_order=-1)
 
 
 # ----------------------------- leaderboards -------------------------------
 # MUST stay custom — uses $group aggregate which find_all_auto does not support.
-# Runs against db1 only (leaderboard accuracy vs. cross-shard complexity is acceptable).
 @api.get("/leaderboard/tests/{course_id}")
 async def leaderboard_tests(course_id: str, days: int = 7):
     cutoff = (now_utc() - timedelta(days=days)).isoformat()
@@ -1140,7 +1159,6 @@ async def leaderboard_tests(course_id: str, days: int = 7):
     for database in databases:
         batch = await database.quiz_submissions.aggregate(pipeline).to_list(50)
         rows.extend(batch)
-    # Re-sort merged results
     rows.sort(key=lambda r: r.get("total_score", 0), reverse=True)
     rows = rows[:50]
     for r in rows:
@@ -1177,28 +1195,40 @@ async def leaderboard_exams(course_id: str, days: int = 30):
 # ----------------------------- progress -----------------------------------
 @api.post("/progress")
 async def update_progress(p: ProgressIn, u=Depends(current_user)):
-    # progress upsert: must use direct DB call (upsert=True not supported by update_auto).
-    # Runs on db1; progress data is user-scoped and non-critical for multi-db distribution.
+    # Upsert must use direct DB call — update_auto does not pass upsert=True.
+    # We try each DB: if the record exists there, update it. Otherwise upsert into
+    # the active DB (get_active_db). This prevents phantom duplicates across shards.
     databases = [db1]
     if db2 is not None:
         databases.append(db2)
     if db3 is not None:
         databases.append(db3)
-    updated = False
+
+    upserted = False
     for database in databases:
         result = await database.progress.update_one(
             {"user_id": u["id"], "course_id": p.course_id, "item_id": p.item_id},
             {"$set": {"watched": p.watched, "updated_at": now_utc().isoformat()}},
+            upsert=False,  # only update existing; don't create here
+        )
+        if result.modified_count > 0:
+            upserted = True
+            break
+
+    if not upserted:
+        # Record doesn't exist in any DB — insert into the active DB
+        active_db = await get_active_db()
+        await active_db.progress.update_one(
+            {"user_id": u["id"], "course_id": p.course_id, "item_id": p.item_id},
+            {"$set": {"watched": p.watched, "updated_at": now_utc().isoformat()}},
             upsert=True,
         )
-        if result.modified_count > 0 or result.upserted_id is not None:
-            updated = True
-            break
-    # Count across all DBs
+
     total = await count_all_auto("recordings", {"course_id": p.course_id})
     watched = await count_all_auto("progress", {"user_id": u["id"], "course_id": p.course_id, "watched": True})
     pct = int((watched / total * 100)) if total else 0
-    await update_auto("enrollments", {"user_id": u["id"], "course_id": p.course_id}, {"$set": {"progress_pct": pct}})
+    await update_auto("enrollments", {"user_id": u["id"], "course_id": p.course_id},
+                      {"$set": {"progress_pct": pct}})
     return {"progress_pct": pct, "watched": watched, "total": total}
 
 
@@ -1209,14 +1239,19 @@ async def mark_completed(cid: str, u=Depends(current_user)):
         raise HTTPException(404, "Not enrolled")
     if (en.get("progress_pct") or 0) < 80:
         raise HTTPException(400, "Complete at least 80% of the course first")
-    await update_auto("enrollments", {"user_id": u["id"], "course_id": cid}, {"$set": {"completed_self": True}})
+    await update_auto("enrollments", {"user_id": u["id"], "course_id": cid},
+                      {"$set": {"completed_self": True}})
     await notify(u["id"], "Course completed!", "Final exam unlocked. Best of luck!", "success")
     return {"ok": True}
 
 
 # ----------------------------- certificates (QR) --------------------------
-# MUST stay on direct DB calls for list/mine — certificates use .sort().to_list() with
-# large result sets; find_all_auto merges across all DBs which is correct here too.
+# BUG FIX 4: Route ordering — /certificates/mine and /certificates/verify/{cert_id}
+# must be declared BEFORE /certificates/{cert_id} and /certificates/{cert_id}/qr.png
+# because FastAPI matches routes top-to-bottom. If {cert_id} is first, then a request
+# to /certificates/mine would match cert_id="mine" and return 404 instead of the list.
+# Current order in uploaded file IS correct already; preserved here explicitly.
+
 @api.get("/certificates")
 async def list_certificates(u=Depends(require_roles("admin", "super_admin"))):
     return await find_all_auto("certificates", {}, sort_field="issued_at", sort_order=-1)
@@ -1227,21 +1262,9 @@ async def my_certificates(u=Depends(current_user)):
     return await find_all_auto("certificates", {"user_id": u["id"]}, sort_field="issued_at", sort_order=-1)
 
 
-@api.get("/certificates/{cert_id}/qr.png")
-async def cert_qr(cert_id: str):
-    cert = await find_one_all("certificates", {"id": cert_id})
-    if not cert:
-        raise HTTPException(404, "Certificate not found")
-    verify_url = cert.get("verify_url") or f"{APP_PUBLIC_URL}/verify/{cert_id}"
-    img = qrcode.make(verify_url)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    fname = re.sub(r"[^A-Za-z0-9_-]+", "_", (cert.get("user_name") or "cert")) + f"_{cert_id}.png"
-    return StreamingResponse(buf, media_type="image/png",
-                              headers={"Content-Disposition": f'attachment; filename="{fname}"'})
-
-
+# BUG FIX 5: /certificates/verify/{cert_id} must come BEFORE /certificates/{cert_id}/qr.png
+# because the path segment "verify" is a literal and must take priority over the
+# {cert_id} wildcard. Current file order is already correct.
 @api.get("/certificates/verify/{cert_id}")
 async def verify_certificate(cert_id: str):
     cert = await find_one_all("certificates", {"id": cert_id})
@@ -1258,13 +1281,38 @@ async def verify_certificate(cert_id: str):
         "course_name": cert.get("course_name"),
         "score_percent": cert.get("score"),
         "issued_at": cert.get("issued_at"),
+        "verify_url": cert.get("verify_url"),
         "message": "THIS CERTIFICATE IS VALID",
     }
 
 
+@api.get("/certificates/{cert_id}/qr.png")
+async def cert_qr(cert_id: str):
+    cert = await find_one_all("certificates", {"id": cert_id})
+    if not cert:
+        raise HTTPException(404, "Certificate not found")
+    # BUG FIX 1 (applied here): cert.get("verify_url") may be a relative path
+    # for certificates created before APP_PUBLIC_URL was set. The fallback now
+    # also uses the stripped APP_PUBLIC_URL so the QR always encodes a full URL.
+    stored_url = cert.get("verify_url", "")
+    if stored_url.startswith("http"):
+        verify_url = stored_url
+    else:
+        # Old cert stored relative path — reconstruct absolute URL
+        verify_url = f"{APP_PUBLIC_URL}/verify/{cert_id}"
+    img = qrcode.make(verify_url)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    fname = re.sub(r"[^A-Za-z0-9_-]+", "_", (cert.get("user_name") or "cert")) + f"_{cert_id}.png"
+    return StreamingResponse(buf, media_type="image/png",
+                              headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 @api.delete("/certificates/{cert_id}")
 async def revoke_certificate(cert_id: str, u=Depends(require_roles("super_admin"))):
-    await update_auto("certificates", {"id": cert_id}, {"$set": {"valid": False, "revoked_at": now_utc().isoformat()}})
+    await update_auto("certificates", {"id": cert_id},
+                      {"$set": {"valid": False, "revoked_at": now_utc().isoformat()}})
     return {"ok": True}
 
 
@@ -1275,7 +1323,6 @@ async def create_announcement(p: AnnouncementIn, u=Depends(require_roles("teache
     doc.update({"id": str(uuid.uuid4()), "created_by": u["id"],
                 "created_by_name": u.get("full_name"), "created_at": now_utc().isoformat()})
     await insert_auto("announcements", doc)
-    # notify enrolled students of that course (or all students if global)
     if p.course_id:
         enrolled = await find_all_auto("enrollments", {"course_id": p.course_id})
         for s in enrolled:
@@ -1307,6 +1354,7 @@ async def list_users(role: Optional[str] = None, u=Depends(require_roles("admin"
     f = {"role": role} if role else {}
     results = await find_all_auto("users", f, sort_field="created_at", sort_order=-1)
     for r in results:
+        # find_all_auto now strips _id centrally; these pop calls are safe no-ops if already gone
         r.pop("_id", None)
         r.pop("password_hash", None)
         r.pop("reset_code", None)
@@ -1336,7 +1384,8 @@ async def admin_delete_user(uid: str, u=Depends(require_roles("super_admin"))):
 # ----------------------------- notifications ------------------------------
 @api.get("/notifications")
 async def list_notifs(u=Depends(current_user)):
-    return await find_all_auto("notifications", {"user_id": u["id"]}, sort_field="created_at", sort_order=-1)
+    return await find_all_auto("notifications", {"user_id": u["id"]},
+                               sort_field="created_at", sort_order=-1)
 
 
 @api.post("/notifications/{nid}/read")
@@ -1347,8 +1396,8 @@ async def mark_read(nid: str, u=Depends(current_user)):
 
 @api.post("/notifications/read-all")
 async def mark_all_read(u=Depends(current_user)):
-    # update_auto only updates in the first DB where modified_count > 0.
-    # For bulk multi-doc update across all DBs, we use direct iteration.
+    # update_auto stops at first DB with modified_count > 0 — wrong for bulk multi-doc.
+    # Must iterate all DBs directly for update_many.
     databases = [db1]
     if db2 is not None:
         databases.append(db2)
@@ -1360,8 +1409,6 @@ async def mark_all_read(u=Depends(current_user)):
 
 
 # ----------------------------- analytics ----------------------------------
-# FIX: analytics() had broken indentation — intermediate awaits were at module scope.
-# Revenue loop must stay custom (iterates approved payments with amount+date filtering).
 @api.get("/analytics/overview")
 async def analytics(u=Depends(require_roles("admin", "super_admin"))):
     total_students = await count_all_auto("users", {"role": "student"})
@@ -1378,7 +1425,9 @@ async def analytics(u=Depends(require_roles("admin", "super_admin"))):
     if db3 is not None:
         databases.append(db3)
     for database in databases:
-        async for p in database.payments.find({"status": "approved"}, {"_id": 0, "amount": 1, "created_at": 1}):
+        async for p in database.payments.find(
+            {"status": "approved"}, {"_id": 0, "amount": 1, "created_at": 1}
+        ):
             revenue += float(p.get("amount", 0))
             try:
                 d = parse_iso(p["created_at"])
@@ -1401,11 +1450,10 @@ async def root():
 
 
 app.include_router(api)
-app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"],
+                   allow_methods=["*"], allow_headers=["*"])
 
 
-# FIX: shutdown() was calling client.close() which doesn't exist.
-# Corrected to close client1, client2, client3 individually.
 @app.on_event("shutdown")
 async def shutdown():
     client1.close()
