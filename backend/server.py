@@ -349,6 +349,52 @@ def extract_youtube_id(url: str) -> Optional[str]:
     return None
 
 
+# Matches all common Google Drive sharing URL formats:
+#   https://drive.google.com/file/d/FILE_ID/view?usp=sharing
+#   https://drive.google.com/file/d/FILE_ID/view
+#   https://drive.google.com/open?id=FILE_ID
+_DRIVE_FILE_RX = re.compile(
+    r"drive\.google\.com/file/d/([A-Za-z0-9_-]+)"
+)
+_DRIVE_OPEN_RX = re.compile(
+    r"drive\.google\.com/open\?id=([A-Za-z0-9_-]+)"
+)
+
+
+def convert_drive_image(url: str) -> str:
+    """Convert a Google Drive sharing URL to a direct displayable image URL.
+
+    The stored database value is NEVER modified — this function is only called
+    when building API responses for the frontend.
+
+    Supported input formats:
+        https://drive.google.com/file/d/FILE_ID/view?usp=sharing
+        https://drive.google.com/file/d/FILE_ID/view
+        https://drive.google.com/open?id=FILE_ID
+
+    Returned format (works in React Native Image and browsers):
+        https://drive.google.com/thumbnail?id=FILE_ID&sz=w2000
+
+    If the URL is not a Google Drive URL, it is returned unchanged.
+    If the URL is empty or None, an empty string is returned.
+    """
+    if not url:
+        return url or ""
+
+    # Try /file/d/FILE_ID/ pattern first (most common sharing link)
+    m = _DRIVE_FILE_RX.search(url)
+    if not m:
+        # Try open?id=FILE_ID pattern
+        m = _DRIVE_OPEN_RX.search(url)
+
+    if m:
+        file_id = m.group(1)
+        return f"https://drive.google.com/thumbnail?id={file_id}&sz=w2000"
+
+    # Not a Google Drive URL — return unchanged
+    return url
+
+
 def parse_iso(s: str) -> datetime:
     s = s.replace("Z", "+00:00")
     dt = datetime.fromisoformat(s)
@@ -722,7 +768,11 @@ async def list_courses(q: Optional[str] = None, category: Optional[str] = None,
             {"description": {"$regex": q, "$options": "i"}},
             {"instructor_name": {"$regex": q, "$options": "i"}},
         ]
-    return await find_all_auto("courses", filt)
+    courses = await find_all_auto("courses", filt)
+    for course in courses:
+        course["thumbnail"] = convert_drive_image(course.get("thumbnail", ""))
+        course["banner"] = convert_drive_image(course.get("banner", ""))
+    return courses
 
 
 @api.get("/courses/{cid}")
@@ -731,6 +781,8 @@ async def get_course(cid: str):
     if not c:
         raise HTTPException(404, "Course not found")
     c.pop("_id", None)
+    c["thumbnail"] = convert_drive_image(c.get("thumbnail", ""))
+    c["banner"] = convert_drive_image(c.get("banner", ""))
     return c
 
 
