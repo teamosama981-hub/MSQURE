@@ -7,7 +7,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { api } from '@/src/lib/api';
 import { theme, spacing } from '@/src/lib/theme';
 import { Button, Input } from '@/src/components/ui';
-import { getImageUrl } from "@/src/lib/image";
 
 export default function AdminCourses() {
   const [items, setItems] = useState<any[]>([]);
@@ -37,7 +36,7 @@ export default function AdminCourses() {
         ListEmptyComponent={<Text style={{ textAlign: 'center', color: theme.textMuted, padding: 40 }}>No courses yet</Text>}
         renderItem={({ item }) => (
           <View style={st.card}>
-            <Image source={{ uri: getImageUrl(item.thumbnail) }} style={st.thumb} contentFit="cover" />
+            <Image source={{ uri: item.thumbnail }} style={st.thumb} contentFit="cover" />
             <View style={{ flex: 1, marginLeft: 10 }}>
               <Text style={st.cName}>{item.name}</Text>
               <Text style={st.cMeta}>{item.category} • ₹{item.discount_price || item.price}</Text>
