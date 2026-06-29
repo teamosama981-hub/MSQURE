@@ -10,7 +10,7 @@ export const Logo: React.FC<Props> = ({ size = 56, showText = true, tagline = fa
     <Image source={{ uri: LOGO_URL }} style={{ width: size, height: size }} contentFit="contain" />
     {showText && (
       <View style={{ marginLeft: 10 }}>
-        <Text style={[styles.title, { color }]} numberOfLines={1}>HENAKASHA</Text>
+        <Text style={[styles.title, { color }]} numberOfLines={1}>M SQURE</Text>
         <Text style={styles.sub} numberOfLines={1}>Tech & Welfare Foundation</Text>
         {tagline && <Text style={styles.tag}>Educate • Empower • Elevate</Text>}
       </View>
