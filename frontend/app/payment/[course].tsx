@@ -88,7 +88,7 @@ const order = r.data;
     currency: order.currency,
     order_id: order.order_id,
 
-    name: "HENAKASHA TECH & WELFARE FOUNDATION",
+    name: "MSQURE TECH & WELFARE FOUNDATION",
     description: c.name,
 
     handler: async (response: any) => {
@@ -133,7 +133,7 @@ const payment = await RazorpayCheckout.open({
   currency: order.currency,
   order_id: order.order_id,
 
-  name: "HENAKASHA TECH & WELFARE FOUNDATION",
+  name: "M SQURE TECH & WELFARE FOUNDATION",
   description: c.name,
 
   prefill: {
