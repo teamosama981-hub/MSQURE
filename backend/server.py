@@ -1,4 +1,4 @@
-"""HENAKASHA TECH & WELFARE FOUNDATION - EdTech Backend (v2)
+"""M SQURE TECH & WELFARE FOUNDATION - EdTech Backend (v2)
 Updated for: UTR-only payments, scheduled MS Teams live windows, YouTube recordings,
 multi-type MCQ (single/multiple/integer) for tests/assignments/exams, leaderboards,
 QR-based certificate verification, announcements.
