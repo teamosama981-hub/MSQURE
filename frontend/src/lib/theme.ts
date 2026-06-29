@@ -19,6 +19,6 @@ export const theme = {
 };
 export const radius = { sm: 6, md: 12, lg: 20, pill: 999 };
 export const spacing = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32, xxxl: 48 };
-export const LOGO_URL = 'https://customer-assets.emergentagent.com/job_learning-hena/artifacts/si1cgnjv_ChatGPT%20Image%20Jun%2018%2C%202026%2C%2001_51_17%20PM.png';
+export const LOGO_URL = 'https://i.postimg.cc/hv48TzFQ/logo.png';
 export const QR_URL = 'https://customer-assets.emergentagent.com/job_learning-hena/artifacts/pi1g6kyh_WhatsApp%20Image%202026-06-18%20at%202.26.26%20PM.jpeg';
 export const FOUNDATION = 'M SQURE TECH & WELFARE FOUNDATION';
