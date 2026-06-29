@@ -10,7 +10,7 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.henakasha.henakashatechwelfarefoundation",
+      "bundleIdentifier": "com.msqure.msquretechwelfarefoundation",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -21,7 +21,7 @@
         "backgroundColor": "#000000"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.henakasha.henakashatechwelfarefoundation"
+      "package": "com.msqure.msquretechwelfarefoundation"
     },
     "web": {
       "bundler": "metro",
